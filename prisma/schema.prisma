@@ -1,0 +1,648 @@
+// Schéma de la base de données — Gestion Commerciale (chaussures & sacs)
+// Chaque modèle correspond exactement à ce qu'on avait dans l'artifact React,
+// mais avec de vraies contraintes d'unicité et de relations gérées par la base.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Role {
+  id          String   @id @default(cuid())
+  nom         String
+  systeme     Boolean  @default(false) // true = rôle protégé (Administrateur), non modifiable/supprimable
+  permissions Json     // { ventes: bool, stock: bool, clients: bool, rapports: bool, utilisateurs: bool, configuration: bool }
+  users       User[]
+  createdAt   DateTime @default(now())
+}
+
+model User {
+  id        String   @id @default(cuid())
+  nom       String
+  prenom    String
+  login     String   @unique
+  pinHash   String   // PIN haché avec bcrypt, jamais stocké en clair
+  roleId    String
+  role      Role     @relation(fields: [roleId], references: [id])
+  boutique  String   // "Angré" | "Koumassi"
+  actif     Boolean  @default(true)
+  telephone String?  @unique // pour la réinitialisation du PIN, à renseigner par chaque employé
+  questionSecrete String?
+  reponseSecreteHash String? // réponse hachée avec bcrypt, comme le PIN
+  ventesCaissier Vente[]
+  ventesAnnulees Vente[] @relation("ventesAnnulees")
+  retours   Retour[]
+  mouvementsStock MouvementStock[]
+  demandesRemise DemandeRemise[] @relation("demandesRemise")
+  remisesTraitees DemandeRemise[] @relation("remisesTraitees")
+  depenses  Depense[]
+  creancesReglees CreanceReglement[]
+  rappelsEffectues BonValeur[]
+  campagnesSoldeCreees CampagneSolde[]
+  receptions Reception[]
+  bonsLivraisonCrees BonLivraison[] @relation("bonsLivraisonCrees")
+  bonsLivraisonClotures BonLivraison[] @relation("bonsLivraisonClotures")
+  clientsCrees Client[] @relation("ClientsCrees")
+  actionsJournal JournalAudit[]
+  changementsStatutVus ChangementStatutFidelite[]
+  createdAt DateTime @default(now())
+}
+
+model Brand {
+  id        String    @id @default(cuid())
+  nom       String    @unique
+  articles  Article[]
+  createdAt DateTime  @default(now())
+}
+
+model Article {
+  id          String       @id @default(cuid())
+  reference   String       @unique // généré : 3 lettres marque + 2 lettres famille + séquence
+  designation String
+  famille     String       // "Chaussure" | "Sac"
+  marqueId    String
+  marque      Brand        @relation(fields: [marqueId], references: [id])
+  prixVente   Int
+  prixAchat   Int?         // renseigné à la première réception, mis à jour à chaque réception suivante
+  actif       Boolean      @default(true)
+  stocks      StockItem[]
+  lignes      LigneVente[]
+  mouvements  MouvementStock[]
+  lignesCampagneSolde LigneCampagneSolde[]
+  lignesReception LigneReception[]
+  lignesBonLivraison LigneBonLivraison[]
+  retoursNouvelArticle Retour[] @relation("nouvelArticleRetour")
+  createdAt   DateTime     @default(now())
+}
+
+// Une ligne de stock par (article, boutique, pointure).
+// Pour un Sac, pointure = null (une seule ligne par boutique).
+model StockItem {
+  id        String   @id @default(cuid())
+  articleId String
+  article   Article  @relation(fields: [articleId], references: [id])
+  boutique  String   // "Angré" | "Koumassi"
+  pointure  String?  // "36".."42" pour Chaussure, null pour Sac
+  quantite  Int      @default(0)
+  // Référence pour l'alerte "stock bas" en pourcentage (voir SEUIL_STOCK_FAIBLE_POURCENT) —
+  // mise à jour à chaque vrai réapprovisionnement (réception, import, ajout ou correction
+  // manuelle de stock), jamais lors d'une simple vente/retour/virement. Null pour une ligne
+  // encore jamais réapprovisionnée depuis l'ajout de ce champ : seul le seuil fixe s'applique alors.
+  quantiteInitiale Int?
+
+  @@unique([articleId, boutique, pointure])
+}
+
+model Client {
+  id             String      @id @default(cuid())
+  code           String      @unique
+  nomPrenoms     String
+  jourAnniv      String
+  moisAnniv      String
+  civilite       String      @default("Madame")
+  adresse        String?
+  ville          String?
+  commune        String?
+  quartier       String?
+  telephone      String?     @unique
+  whatsapp       String?
+  pointure       String?
+  pays           String?
+  carteFidelite  String?     @unique
+  // Programme de fidélité "Cendrillon" (voir PalierBonus/PalierStatut) :
+  // - cumulFideliteTotal : cumul à VIE des achats éligibles, jamais remis à zéro — détermine le
+  //   statut (Découverte, Fidèle, Privilège, VIP, Prestige, Élite). Remplace l'ancien champ
+  //   "montantCumule", jamais exploité jusqu'ici.
+  // - cumulFideliteCourant : cumul pour le PROCHAIN bonus, remis à zéro dès qu'un bonus est
+  //   utilisé. Le bonus disponible n'est jamais stocké : il se recalcule à chaque fois depuis ce
+  //   cumul via PalierBonus (une cliente n'a jamais qu'un seul bonus actif à la fois — si elle
+  //   franchit un palier supérieur avant d'avoir utilisé son bonus, il est simplement réévalué
+  //   à la hausse, jamais cumulé).
+  // Seules les ventes Comptant, sans la moindre remise (Soldes ou classique), alimentent les deux
+  // cumuls. Historique repris depuis le 13/07/2026 par script de rattrapage.
+  cumulFideliteTotal   Int   @default(0)
+  cumulFideliteCourant Int   @default(0)
+  // Dernier statut Cendrillon déjà notifié (voir ChangementStatutFidelite) — pour ne signaler
+  // qu'un vrai changement, jamais le statut de départ ("Découverte") assigné automatiquement.
+  dernierStatutNotifie String?
+  bonusFidelite  BonusFideliteUtilise[]
+  changementsStatut ChangementStatutFidelite[]
+  dateDelivrance DateTime?
+  observation    String?
+  // Qui a enregistré cette fiche — capturé automatiquement, aucune saisie supplémentaire.
+  // Null pour les fiches créées avant l'ajout de ce suivi.
+  creeParId      String?
+  creePar        User?       @relation("ClientsCrees", fields: [creeParId], references: [id])
+  ventes         Vente[]
+  bonsValeur     BonValeur[]
+  creancesHistoriques CreanceHistorique[]
+  bonsLivraison  BonLivraison[]
+  createdAt      DateTime    @default(now())
+}
+
+model Vente {
+  typeVente     String       @default("Comptant") // "Comptant" | "Credit"
+  id            String       @id @default(cuid())
+  numero        String       @unique // REC-000001...
+  date          DateTime     @default(now())
+  boutique      String
+  modeVente     String       // "Boutique" | "Livraison" | "Expédition"
+  caissierId    String
+  caissier      User         @relation(fields: [caissierId], references: [id])
+  vendeurId     String?
+  vendeur       Vendeur?     @relation(fields: [vendeurId], references: [id])
+  clientId      String?
+  client        Client?      @relation(fields: [clientId], references: [id])
+  total         Int
+  montantRemise Int          @default(0)
+  demandeRemiseId String?    @unique
+  demandeRemise DemandeRemise? @relation(fields: [demandeRemiseId], references: [id])
+  montantBonusFidelite Int   @default(0) // bonus Cendrillon déduit sur cette vente (voir BonusFideliteUtilise)
+  bonusFidelite BonusFideliteUtilise[]
+  monnaieRendue Int          @default(0)
+  statut          String    @default("Validee") // "Validee" | "Annulee"
+  motifAnnulation String?
+  annuleeParId    String?
+  annuleePar      User?     @relation("ventesAnnulees", fields: [annuleeParId], references: [id])
+  dateAnnulation  DateTime?
+  lignes        LigneVente[]
+  paiements     Paiement[]
+  retours       Retour[]
+  mouvementsStock MouvementStock[]
+  cartesCadeauxEmises BonValeur[] @relation("carteEmiseVente")
+  bonLivraisonOrigineId String?   @unique // renseigné si cette vente a été générée par la clôture d'un bon de livraison
+  bonLivraisonOrigine   BonLivraison? @relation("venteGeneree", fields: [bonLivraisonOrigineId], references: [id])
+}
+
+model LigneVente {
+  id            String   @id @default(cuid())
+  venteId       String
+  vente         Vente    @relation(fields: [venteId], references: [id])
+  articleId     String
+  article       Article  @relation(fields: [articleId], references: [id])
+  designation   String   // copie au moment de la vente (historique figé même si l'article change après)
+  marque        String
+  famille       String
+  pointure      String?
+  quantite      Int
+  prixUnitaire  Int
+  sousTotal     Int
+  retours       Retour[]
+}
+
+model Paiement {
+  id          String     @id @default(cuid())
+  venteId     String?    // absent si ce paiement concerne un échange (retourId renseigné à la place), ou pas encore rattaché (avance de livraison avant clôture)
+  vente       Vente?     @relation(fields: [venteId], references: [id])
+  retourId    String?    // renseigné uniquement pour le supplément payé lors d'un échange vers un article plus cher
+  retour      Retour?    @relation(fields: [retourId], references: [id])
+  mode        String     // "especes" | "mobile" | "carte" | "bon_achat" | "avoir"
+  montant     Int
+  viaReglement Boolean   @default(false) // true = ajouté après coup via /:id/reglement
+  // Avance perçue à la création d'un bon de livraison, encaissée réellement CE jour-là (voir
+  // bonLivraisonId) — mais qui ne devient une ligne de paiement rattachée à une vraie vente
+  // qu'à la clôture du bon, parfois plusieurs jours plus tard. createdAt garde la vraie date de
+  // l'encaissement (le départ du livreur), pas la date de clôture : la fermeture de caisse et le
+  // récap "par mode de paiement" comptent ce montant sur le jour réel, jamais sur les deux, et
+  // jamais sur le jour de la vente générée si celui-ci diffère (même principe que viaReglement).
+  viaAvanceLivraison Boolean @default(false)
+  bonLivraisonId String?
+  bonLivraison    BonLivraison? @relation(fields: [bonLivraisonId], references: [id])
+  bonValeurId String?    // renseigné uniquement si mode = "bon_achat" ou "avoir"
+  bonValeur   BonValeur? @relation(fields: [bonValeurId], references: [id])
+  createdAt   DateTime   @default(now())
+}
+
+// Retour ou échange de marchandise après une vente.
+// - type "Retour"  : la marchandise revient en stock, un Avoir est généré automatiquement pour le client (voir BonValeur)
+// - type "Echange" : la marchandise revient en stock à l'ancienne pointure, et une nouvelle quantité sort à la nouvelle pointure
+model Retour {
+  id              String     @id @default(cuid())
+  venteId         String
+  vente           Vente      @relation(fields: [venteId], references: [id])
+  ligneVenteId    String
+  ligneVente      LigneVente @relation(fields: [ligneVenteId], references: [id])
+  type            String     // "Retour" | "Echange"
+  quantite        Int
+  nouvellePointure String?   // uniquement pour un Echange
+  nouvelArticleId String?    // renseigné uniquement si l'échange se fait vers un AUTRE article (pas juste une autre pointure)
+  nouvelArticle   Article?   @relation("nouvelArticleRetour", fields: [nouvelArticleId], references: [id])
+  supplementPaye  Int?       // montant réellement payé en plus (déjà net d'une éventuelle remise) — jamais remboursé en espèces
+  demandeRemiseId String?    @unique // remise immédiate appliquée sur le supplément (Djenie l'oublie parfois sur certains prix), régularisée après coup comme pour une vente
+  demandeRemise   DemandeRemise? @relation(fields: [demandeRemiseId], references: [id])
+  motif           String?
+  boutique        String     // boutique où le retour est traité (peut différer de la boutique d'achat)
+  traiteParId     String
+  traitePar       User       @relation(fields: [traiteParId], references: [id])
+  montantRembourse Int?      // renseigné pour un Retour donnant lieu à un avoir
+  bonValeurGenere BonValeur?
+  paiements       Paiement[] // supplément payé lors d'un échange vers un article plus cher
+  mouvementsStock MouvementStock[]
+  date            DateTime   @default(now())
+}
+
+// Vente non finalisée, mise de côté le temps que le client revienne (caisse débloquée pour d'autres clients)
+model VenteAttente {
+  id        String   @id @default(cuid())
+  boutique  String
+  label     String   // ex: nom du client ou repère libre pour retrouver le ticket
+  clientId  String?
+  vendeurId String
+  modeVente String
+  panier    Json     // snapshot des lignes du panier au moment de la mise en attente
+  paiements Json?    // paiements déjà saisis avant la mise en attente, s'il y en a
+  cartesCadeaux Json? // cartes cadeaux ajoutées au panier avant la mise en attente, s'il y en a
+  createdAt DateTime @default(now())
+}
+
+// Bon de valeur — regroupe deux usages :
+// - "AVOIR"  : généré automatiquement suite à un Retour, associé obligatoirement à un client
+// - "CADEAU" : soit créé manuellement par une caissière (formulaire dédié), soit émis directement
+//   depuis le panier d'une vente (voir origineVenteId) — numéro auto ou manuel dans les deux cas.
+// Dans les deux cas : numéro unique, montant fixe, date de validité, usage unique anti-fraude.
+model BonValeur {
+  id              String     @id @default(cuid())
+  numero          String     @unique
+  type            String     // "AVOIR" | "CADEAU"
+  montant         Int
+  dateValidite    DateTime?
+  boutique        String?    // renseigné uniquement pour une carte cadeau (encaissement à la création)
+  modePaiement    String?    // renseigné uniquement pour une carte cadeau créée via le formulaire dédié
+  enStock         Boolean    @default(false) // true = Djenie a réceptionné cette carte physique, pas encore vendue à une cliente
+  utilisee        Boolean    @default(false) // true = utilisée comme paiement par la cliente qui la possède
+  utiliseeVenteId String?
+  rappelEffectue  Boolean    @default(false) // true = une caissière ou l'admin a déjà appelé la cliente au sujet de l'échéance proche
+  rappelEffectueParId String?
+  rappelEffectuePar User?    @relation(fields: [rappelEffectueParId], references: [id])
+  dateRappel      DateTime?
+  clientId        String?
+  client          Client?    @relation(fields: [clientId], references: [id])
+  retourOrigineId String?    @unique
+  retourOrigine   Retour?    @relation(fields: [retourOrigineId], references: [id])
+  origineVenteId  String?    // renseigné uniquement si vendue depuis le panier d'une vente
+  origineVente    Vente?     @relation("carteEmiseVente", fields: [origineVenteId], references: [id])
+  paiements       Paiement[]
+  ligneBonLivraison LigneBonLivraisonCarte?
+  createdAt       DateTime   @default(now())
+}
+
+// Historique de tous les mouvements de stock : ajout (réception), virement entre boutiques, correction (inventaire).
+// Permet de savoir qui a fait quoi, quand, et de retracer un écart de stock.
+model MouvementStock {
+  id                 String   @id @default(cuid())
+  articleId          String
+  article            Article  @relation(fields: [articleId], references: [id])
+  type               String   // "Ajout" | "Virement" | "Correction" | "Vente" | "Retour" | "Echange" | "SortieLivraison" | "RetourLivraison"
+  boutique           String   // boutique concernée (destination pour un ajout/correction, ou destination pour un virement)
+  boutiqueSource     String?  // renseigné uniquement pour un virement
+  pointure           String?
+  quantite           Int      // quantité du mouvement (positive)
+  quantiteAvant      Int      // quantité avant l'opération, dans la boutique concernée
+  quantiteApres      Int      // quantité après l'opération, dans la boutique concernée
+  venteId            String?  // renseigné pour un mouvement "Vente" — traçabilité vers la vente d'origine
+  vente              Vente?   @relation(fields: [venteId], references: [id])
+  retourId           String?  // renseigné pour un mouvement "Retour"/"Echange" — traçabilité vers le retour d'origine
+  retour             Retour?  @relation(fields: [retourId], references: [id])
+  bonLivraisonId     String?  // renseigné pour "SortieLivraison"/"RetourLivraison" — traçabilité vers le bon de livraison
+  bonLivraison       BonLivraison? @relation(fields: [bonLivraisonId], references: [id])
+  effectueParId      String
+  effectuePar        User     @relation(fields: [effectueParId], references: [id])
+  date               DateTime @default(now())
+}
+
+model Vendeur {
+  id        String   @id @default(cuid())
+  nom       String
+  boutique  String   // "Angré" | "Koumassi"
+  actif     Boolean  @default(true)
+  ventes    Vente[]
+  createdAt DateTime @default(now())
+}
+
+// Demande de remise soumise par une caissière, à valider par Djenie (Administrateur) depuis n'importe où.
+// Le front interroge régulièrement (polling) le statut plutôt que d'utiliser une connexion temps réel.
+model DemandeRemise {
+  id              String   @id @default(cuid())
+  numero          String   @unique // DEM-000001...
+  boutique        String
+  demandeParId    String
+  demandePar      User     @relation("demandesRemise", fields: [demandeParId], references: [id])
+  clientNom       String?  // pour donner du contexte à Djenie sans exposer toute la vente
+  totalVente      Int      // total du panier avant remise
+  type            String   // "MONTANT" | "POURCENTAGE"
+  valeur          Int      // montant en F CFA, ou pourcentage (ex: 10 pour 10%)
+  montantRemise   Int      // calculé à la création : min(valeur, totalVente) si MONTANT, sinon totalVente * valeur / 100
+  statut          String   @default("EN_ATTENTE") // "EN_ATTENTE" | "APPROUVEE" | "REFUSEE"
+  traiteParId     String?
+  traitePar       User?    @relation("remisesTraitees", fields: [traiteParId], references: [id])
+  dateTraitement  DateTime?
+  utilisee        Boolean  @default(false) // passe à true une fois utilisée pour finaliser une vente — anti-réutilisation
+  vente           Vente?
+  retour          Retour?
+  createdAt       DateTime @default(now())
+}
+// Catégorie de dépense (Loyer, Carburant, Salaires...) — liste gérée uniquement par Djenie.
+model CategorieDepense {
+  id        String     @id @default(cuid())
+  nom       String     @unique
+  actif     Boolean    @default(true)
+  depenses  Depense[]
+  budgets   BudgetAnnuel[]
+  createdAt DateTime   @default(now())
+}
+
+// Dépense saisie par une caissière (jour même uniquement) ou par Djenie (n'importe quand, n'importe quelle boutique).
+// Règle de visibilité stricte gérée côté API, pas ici : une caissière ne voit que ses propres
+// saisies du jour ; Djenie voit tout, mais ses propres saisies restent privées pour les autres.
+model Depense {
+  id            String           @id @default(cuid())
+  date          DateTime         @default(now())
+  boutique      String           // "Angré" | "Koumassi"
+  categorieId   String
+  categorie     CategorieDepense @relation(fields: [categorieId], references: [id])
+  montant       Int
+  description   String?
+  reference     String?          // justificatif en texte libre : n° de facture, "reçu papier classé"...
+  effectueParId String
+  effectuePar   User             @relation(fields: [effectueParId], references: [id])
+  createdAt     DateTime         @default(now())
+}
+
+// Budget prévisionnel annuel par catégorie — un seul montant pour l'année, saisi et consulté par Djenie uniquement.
+model BudgetAnnuel {
+  id                  String           @id @default(cuid())
+  categorieId         String
+  categorie           CategorieDepense @relation(fields: [categorieId], references: [id])
+  annee               Int
+  montantPrevisionnel Int
+  createdAt           DateTime         @default(now())
+
+  @@unique([categorieId, annee])
+}
+
+// Ancienne créance client héritée d'Abigescom, importée pour suivi uniquement à partir de maintenant.
+// Ne touche ni le stock ni les ventes — juste un montant total dû et un historique des règlements reçus.
+model CreanceHistorique {
+  id              String              @id @default(cuid())
+  clientId        String
+  client          Client              @relation(fields: [clientId], references: [id])
+  boutique        String
+  montantTotal    Int
+  montantDejaPaye Int                 @default(0) // ce qui avait deja ete regle avant l'import (Abigescom)
+  note            String?
+  reglements      CreanceReglement[]
+  createdAt       DateTime            @default(now())
+}
+
+// Un règlement reçu sur une créance historique, à partir de la date d'import.
+model CreanceReglement {
+  id            String            @id @default(cuid())
+  creanceId     String
+  creance       CreanceHistorique @relation(fields: [creanceId], references: [id])
+  montant       Int
+  mode          String
+  boutique      String
+  effectueParId String
+  effectuePar   User              @relation(fields: [effectueParId], references: [id])
+  createdAt     DateTime          @default(now())
+}
+
+// Remise groupée temporaire (soldes) appliquée à une sélection d'articles (filtrée par marque
+// et/ou famille). Le prix d'origine de chaque article est conservé sur la ligne pour permettre
+// une restauration automatique à la date de fin, sans dépendre d'une mémoire externe.
+// Un article ne peut appartenir qu'à une seule campagne ACTIVE à la fois (contrainte appliquée
+// côté code, pas en base, pour permettre l'historique des campagnes TERMINEE sur le même article).
+model CampagneSolde {
+  id          String               @id @default(cuid())
+  numero      String               @unique // SOLDE-000001...
+  nom         String?              // libellé libre, ex: "Soldes rentrée Août 2026"
+  type        String               // "MONTANT" | "POURCENTAGE"
+  valeur      Int
+  dateDebut   DateTime             @default(now())
+  dateFin     DateTime             // restauration automatique des prix a cette date
+  statut      String               @default("ACTIVE") // "ACTIVE" | "TERMINEE"
+  terminaisonAnticipee Boolean     @default(false) // true si terminée manuellement avant dateFin
+  creeParId   String
+  creePar     User                 @relation(fields: [creeParId], references: [id])
+  lignes      LigneCampagneSolde[]
+  createdAt   DateTime             @default(now())
+}
+
+model LigneCampagneSolde {
+  id           String        @id @default(cuid())
+  campagneId   String
+  campagne     CampagneSolde @relation(fields: [campagneId], references: [id])
+  articleId    String
+  article      Article       @relation(fields: [articleId], references: [id])
+  prixOriginal Int           // prixVente de l'article juste avant l'application de la campagne
+  prixSolde    Int           // prixVente appliqué pendant la campagne
+
+  @@unique([campagneId, articleId])
+}
+
+// Valeurs de cartes cadeaux physiques disponibles (celles imprimées sur les cartes en stock :
+// 50 000 / 100 000 / 150 000 F...), gérées par Djenie. Utilisée pour proposer la liste des
+// montants valides quand une carte est vendue depuis le panier d'une vente.
+model DenominationCarteCadeau {
+  id            String   @id @default(cuid())
+  montant       Int      @unique
+  actif         Boolean  @default(true)
+  stockRestant  Int      @default(0) // nombre de cartes physiques de ce montant encore disponibles en boutique
+  createdAt     DateTime @default(now())
+}
+
+// Réception de marchandise (arrivage fournisseur) — augmente le stock et met à jour le prix
+// d'achat des articles concernés. Pas de date de péremption ici (spécifique aux cosmétiques
+// d'Archange Bébé, non pertinent pour des chaussures/sacs).
+model Reception {
+  id            String   @id @default(cuid())
+  fournisseur   String?
+  reference     String?  // référence du bon de livraison fournisseur
+  boutique      String
+  dateReception DateTime @default(now())
+  notes         String?
+  effectueParId String
+  effectuePar   User     @relation(fields: [effectueParId], references: [id])
+  lignes        LigneReception[]
+  createdAt     DateTime @default(now())
+}
+
+model LigneReception {
+  id          String    @id @default(cuid())
+  receptionId String
+  reception   Reception @relation(fields: [receptionId], references: [id])
+  articleId   String
+  article     Article   @relation(fields: [articleId], references: [id])
+  pointure    String?   // vide pour Sac / Article d'entretien
+  quantite    Int
+  prixAchat   Int?
+}
+
+// Code de confirmation à deux facteurs, exigé en plus du PIN pour les actions sensibles
+// (créer/modifier/supprimer un utilisateur, créer/modifier/supprimer un rôle). Connu uniquement
+// des personnes de confiance (jamais transmis aux employés), distinct de tout PIN de connexion —
+// protège même si un PIN administrateur venait à fuiter. Une seule ligne existe (singleton).
+model ParametreSecurite {
+  id                   String   @id @default(cuid())
+  codeConfirmationHash String
+  updatedAt            DateTime @updatedAt
+  createdAt            DateTime @default(now())
+}
+
+// Réglages de l'alerte "stock bas" sur les articles (voir StockItem.quantiteInitiale). Une seule
+// ligne en base, modifiable par l'administrateur. Une ligne de stock est signalée dès que l'une
+// OU l'autre condition est vraie : quantité <= seuilFixe, ou (si quantiteInitiale connue)
+// quantité <= quantiteInitiale * seuilPourcentage / 100. Le seuil fixe couvre les petites séries
+// (pièce unique, lot de 4...) ; le pourcentage couvre les grosses collections, adapté au
+// fonctionnement par collection de Djenie où un article vendu peut ne jamais revenir en stock.
+model ParametreStock {
+  id               String   @id @default(cuid())
+  seuilFixe        Int      @default(3)
+  seuilPourcentage Int      @default(15)
+  updatedAt        DateTime @updatedAt
+  createdAt        DateTime @default(now())
+}
+
+// Clé d'accès pour un tiers externe (ex : agence du site e-commerce) — donne un accès en
+// LECTURE SEULE au catalogue et au stock via /api/api-publique, jamais à autre chose (aucune
+// donnée client, vente, utilisateur). La clé brute n'est jamais stockée, seulement son hash —
+// affichée une seule fois à la création, comme un mot de passe.
+model CleApiPublique {
+  id                  String    @id @default(cuid())
+  nom                 String    // ex : "Site e-commerce - agence X"
+  cleHash              String
+  actif               Boolean   @default(true)
+  derniereUtilisation DateTime?
+  createdAt           DateTime  @default(now())
+}
+
+// Bon de livraison — ferme le trou entre le moment où un article sort physiquement de la
+// boutique avec le livreur et le moment où c'est enregistré dans le logiciel. Le stock est
+// décrémenté DÈS LA CRÉATION du bon (départ du livreur), pas seulement à son retour — c'est
+// précisément ce qui garantit qu'aucune paire ne sort sans laisser de trace immédiate.
+// Au retour du livreur, une réconciliation ligne par ligne détermine ce qui a été vendu
+// (génère une vraie Vente, encaissement inclus) et ce qui revient (remis en stock).
+model BonLivraison {
+  id              String   @id @default(cuid())
+  numero          String   @unique // BL-000001...
+  boutique        String
+  clientNom       String   // saisi librement (souvent une commande WhatsApp, pas forcément une fiche client)
+  clientTelephone String?
+  clientId        String?  // renseigné seulement si rattaché à une fiche client existante
+  client          Client?  @relation(fields: [clientId], references: [id])
+  lieuLivraison   String?  // adresse ou quartier de livraison — aide a retrouver le bon bon parmi plusieurs en cours
+  livreurNom      String?
+  statut          String   @default("EN_COURS") // "EN_COURS" | "CLOTURE" | "ANNULE" (perte/casse/annulation)
+  avance          Int      @default(0) // montant déjà perçu de la cliente avant le départ du livreur
+  avanceModePaiement String? // mode de paiement de cette avance (espèces, Wave...) — obligatoire si avance > 0
+  notes           String?
+  creeParId       String
+  creePar         User     @relation("bonsLivraisonCrees", fields: [creeParId], references: [id])
+  clotureParId    String?
+  cloturePar      User?    @relation("bonsLivraisonClotures", fields: [clotureParId], references: [id])
+  lignes          LigneBonLivraison[]
+  cartesLignes    LigneBonLivraisonCarte[]
+  mouvementsStock MouvementStock[]
+  paiementsAvance Paiement[]
+  venteGeneree    Vente?   @relation("venteGeneree")
+  dateCreation    DateTime @default(now())
+  dateCloture     DateTime?
+}
+
+model LigneBonLivraison {
+  id           String       @id @default(cuid())
+  bonId        String
+  bon          BonLivraison @relation(fields: [bonId], references: [id])
+  articleId    String
+  article      Article      @relation(fields: [articleId], references: [id])
+  pointure     String?      // vide pour Sac / Article d'entretien
+  quantite     Int          // quantité emportée par le livreur
+  prixUnitaire Int          // prix figé au moment du départ, réutilisé pour la vente générée à la clôture
+  statut       String       @default("EMPORTE") // "EMPORTE" -> "VENDU" | "RETOURNE" à la clôture
+}
+
+// Une carte cadeau réservée pour une livraison — même principe qu'une paire de chaussures :
+// dès le départ du livreur, la carte passe enStock:false (indisponible en boutique), comme si
+// elle venait d'être vendue. Au retour : VENDU (la vente se fait), RETOURNE (redevient dispo)
+// ou PERDUE (reste hors stock, tracée mais jamais réintégrée automatiquement — même principe
+// que le statut "PERDU" des articles).
+model LigneBonLivraisonCarte {
+  id          String       @id @default(cuid())
+  bonId       String
+  bon         BonLivraison @relation(fields: [bonId], references: [id])
+  bonValeurId String       @unique // une carte ne peut être réservée que dans un seul bon à la fois
+  bonValeur   BonValeur    @relation(fields: [bonValeurId], references: [id])
+  statut      String       @default("EMPORTE") // "EMPORTE" -> "VENDU" | "RETOURNE" | "PERDUE" à la clôture
+}
+
+// Journal d'audit générique — réservé à l'administrateur (Djenie), pour repérer des tendances
+// chez le personnel (pas pour un usage quotidien des caissières). Une table volontairement
+// simple et réutilisable plutôt qu'une table dédiée par type d'action.
+model JournalAudit {
+  id            String   @id @default(cuid())
+  action        String   // "PRIX_MODIFIE" | "SUPPRESSION" | "CONNEXION" | "PIN_MODIFIE" | "ROLE_MODIFIE"
+  cible         String   // description courte de ce qui est concerné, ex. "Article : Sandale Léa (REF-042)"
+  detail        String?  // ex. "Prix : 25 000 F -> 20 000 F"
+  utilisateurId String
+  utilisateur   User     @relation(fields: [utilisateurId], references: [id])
+  boutique      String?  // boutique de l'utilisateur au moment de l'action, pour un filtre rapide
+  createdAt     DateTime @default(now())
+}
+
+// ===================== Programme de fidélité "Cendrillon" =====================
+// Voir le commentaire sur Client.cumulFideliteTotal/cumulFideliteCourant pour le fonctionnement
+// général. Les deux grilles (bonus, statut) sont des listes ouvertes que Djenie gère elle-même,
+// pas des valeurs figées dans le code — comme ParametreStock pour les seuils de stock bas.
+
+// Grille des bonus, fondée sur le cumul COURANT (celui qui repart à zéro). Un seuilHaut null
+// signifie "et au-delà" (dernier palier de la grille).
+model PalierBonus {
+  id          String   @id @default(cuid())
+  seuilBas    Int
+  seuilHaut   Int?
+  montantBonus Int
+  actif       Boolean  @default(true)
+  createdAt   DateTime @default(now())
+}
+
+// Grille des statuts, fondée sur le cumul TOTAL à vie (jamais remis à zéro). Purement honorifique
+// — voir Client.cumulFideliteTotal — n'entraîne aucune réduction automatique.
+model PalierStatut {
+  id          String   @id @default(cuid())
+  nom         String   // ex. "Cendrillon VIP"
+  seuilBas    Int
+  seuilHaut   Int?
+  actif       Boolean  @default(true)
+  createdAt   DateTime @default(now())
+}
+
+// Historique complet de chaque bonus fidélité obtenu et utilisé — traçabilité demandée par
+// Djenie ("en cas de vérification"). Une ligne par bonus réellement déduit sur un reçu.
+model BonusFideliteUtilise {
+  id        String   @id @default(cuid())
+  clientId  String
+  client    Client   @relation(fields: [clientId], references: [id])
+  venteId   String
+  vente     Vente    @relation(fields: [venteId], references: [id])
+  montant   Int
+  createdAt DateTime @default(now())
+}
+
+// Un changement de statut Cendrillon détecté (à la hausse) — pour l'alerte vendeuse/responsable
+// sur le Dashboard. Djenie choisit elle-même le geste commercial ; aucune réduction automatique.
+model ChangementStatutFidelite {
+  id           String    @id @default(cuid())
+  clientId     String
+  client       Client    @relation(fields: [clientId], references: [id])
+  ancienStatut String?
+  nouveauStatut String
+  vu           Boolean   @default(false)
+  vuParId      String?
+  vuPar        User?     @relation(fields: [vuParId], references: [id])
+  dateVu       DateTime?
+  createdAt    DateTime  @default(now())
+}
