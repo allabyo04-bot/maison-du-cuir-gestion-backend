@@ -364,7 +364,8 @@ router.get("/recap-boutiques", async (req, res) => {
   const { dateDebut, dateFin } = req.query;
   const plage = parseDateRange(dateDebut, dateFin);
 
-  const boutiques = ["Angré", "Koumassi"];
+  const { BOUTIQUES } = require("../constants");
+  const boutiques = BOUTIQUES;
   const parBoutique = [];
 
   for (const boutique of boutiques) {
