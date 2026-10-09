@@ -26,6 +26,7 @@ const securiteRoutes = require("./routes/securite");
 const apiPubliqueRoutes = require("./routes/api-publique");
 const journalAuditRoutes = require("./routes/journal-audit");
 const fideliteRoutes = require("./routes/fidelite");
+const fournisseurRoutes = require("./routes/fournisseurs");
 
 const app = express();
 
@@ -58,6 +59,7 @@ app.use("/api/securite", securiteRoutes);
 app.use("/api/api-publique", apiPubliqueRoutes);
 app.use("/api/journal-audit", journalAuditRoutes);
 app.use("/api/fidelite", fideliteRoutes);
+app.use("/api/fournisseurs", fournisseurRoutes);
 
 // Gestion centralisée des erreurs non prévues
 app.use((err, req, res, next) => {

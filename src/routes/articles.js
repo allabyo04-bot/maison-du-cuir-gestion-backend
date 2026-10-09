@@ -430,4 +430,19 @@ router.post("/import/confirmer", requirePermission("stock"), requireAdmin, async
   }
 });
 
+// GET /api/articles/:id/historique-prix-achat — chaque prix d'achat connu pour cet article,
+// dans l'ordre chronologique, avec le fournisseur et la date de la réception correspondante.
+router.get("/:id/historique-prix-achat", async (req, res) => {
+  const lignes = await prisma.ligneReception.findMany({
+    where: { articleId: req.params.id, prixAchat: { not: null } },
+    include: { reception: { include: { fournisseur: true } } },
+    orderBy: { reception: { dateReception: "asc" } },
+  });
+  res.json(lignes.map((l) => ({
+    prixAchat: l.prixAchat, quantite: l.quantite,
+    date: l.reception.dateReception,
+    fournisseur: l.reception.fournisseur?.nom || l.reception.fournisseurNomLibre || null,
+  })));
+});
+
 module.exports = router;

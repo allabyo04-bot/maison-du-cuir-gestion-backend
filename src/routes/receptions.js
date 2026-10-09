@@ -10,19 +10,20 @@ router.get("/", async (req, res) => {
   const { boutique } = req.query;
   const receptions = await prisma.reception.findMany({
     where: { boutique: boutique || undefined },
-    include: { lignes: { include: { article: true } }, effectuePar: true },
+    include: { lignes: { include: { article: true } }, effectuePar: true, fournisseur: true, paiements: true },
     orderBy: { dateReception: "desc" },
   });
   res.json(receptions);
 });
 
 // POST /api/receptions
-// body: { fournisseur?, reference?, boutique, notes?, lignes: [{ articleId, pointure?, quantite, prixAchat? }] }
-// Chaque ligne augmente le stock de la boutique concernée et met à jour le prix d'achat de
-// l'article (dernier prix connu). Un mouvement "Ajout" est tracé pour chaque ligne, comme pour
-// tout autre ajout de stock.
+// body: { fournisseurId?, fournisseurNomLibre?, reference?, boutique, notes?, lignes: [{ articleId, pointure?, quantite, prixAchat? }] }
+// fournisseurId (fiche enregistrée) est recommandé ; fournisseurNomLibre reste possible pour un
+// arrivage ponctuel sans créer de fiche. Chaque ligne augmente le stock de la boutique concernée
+// et met à jour le prix d'achat de l'article (dernier prix connu). Un mouvement "Ajout" est tracé
+// pour chaque ligne, comme pour tout autre ajout de stock.
 router.post("/", async (req, res) => {
-  const { fournisseur, reference, boutique, notes, lignes } = req.body;
+  const { fournisseurId, fournisseurNomLibre, reference, boutique, notes, lignes } = req.body;
   const utilisateurId = req.user.id;
 
   if (!boutique || !Array.isArray(lignes) || lignes.length === 0) {
@@ -38,7 +39,8 @@ router.post("/", async (req, res) => {
     const reception = await prisma.$transaction(async (tx) => {
       const rec = await tx.reception.create({
         data: {
-          fournisseur: fournisseur?.trim() || null,
+          fournisseurId: fournisseurId || null,
+          fournisseurNomLibre: fournisseurId ? null : (fournisseurNomLibre?.trim() || null),
           reference: reference?.trim() || null,
           boutique, notes: notes?.trim() || null,
           effectueParId: utilisateurId,
@@ -87,7 +89,7 @@ router.post("/", async (req, res) => {
 
       return tx.reception.findUnique({
         where: { id: rec.id },
-        include: { lignes: { include: { article: true } }, effectuePar: true },
+        include: { lignes: { include: { article: true } }, effectuePar: true, fournisseur: true },
       });
     });
     res.status(201).json(reception);

@@ -179,7 +179,7 @@ router.post("/", async (req, res) => {
         lignesData.push({
           articleId: article.id, designation: article.designation, marque: article.marque.nom,
           famille: article.famille, pointure: l.pointure || "", quantite: Number(l.quantite),
-          prixUnitaire: article.prixVente, sousTotal,
+          prixUnitaire: article.prixVente, sousTotal, coutUnitaire: article.prixAchat ?? null,
         });
       }
 

@@ -44,6 +44,7 @@ model User {
   rappelsEffectues BonValeur[]
   campagnesSoldeCreees CampagneSolde[]
   receptions Reception[]
+  paiementsFournisseurs FournisseurPaiement[]
   bonsLivraisonCrees BonLivraison[] @relation("bonsLivraisonCrees")
   bonsLivraisonClotures BonLivraison[] @relation("bonsLivraisonClotures")
   clientsCrees Client[] @relation("ClientsCrees")
@@ -76,6 +77,7 @@ model Article {
   lignesReception LigneReception[]
   lignesBonLivraison LigneBonLivraison[]
   retoursNouvelArticle Retour[] @relation("nouvelArticleRetour")
+  fournisseurs FournisseurArticle[]
   createdAt   DateTime     @default(now())
 }
 
@@ -191,6 +193,10 @@ model LigneVente {
   quantite      Int
   prixUnitaire  Int
   sousTotal     Int
+  // Prix d'achat de l'article au moment de CETTE vente (copié depuis Article.prixAchat) — figé
+  // pour que la marge historique ne bouge jamais si le prix d'achat change plus tard. Null si le
+  // prix d'achat de l'article était inconnu à ce moment-là (jamais reçu de fournisseur encore).
+  coutUnitaire  Int?
   retours       Retour[]
 }
 
@@ -460,7 +466,9 @@ model DenominationCarteCadeau {
 // d'Archange Bébé, non pertinent pour des chaussures/sacs).
 model Reception {
   id            String   @id @default(cuid())
-  fournisseur   String?
+  fournisseurId String?  // fiche fournisseur enregistrée (recommandé)
+  fournisseur   Fournisseur? @relation(fields: [fournisseurId], references: [id])
+  fournisseurNomLibre String? // nom libre si le fournisseur n'est pas (encore) enregistré comme fiche
   reference     String?  // référence du bon de livraison fournisseur
   boutique      String
   dateReception DateTime @default(now())
@@ -468,7 +476,56 @@ model Reception {
   effectueParId String
   effectuePar   User     @relation(fields: [effectueParId], references: [id])
   lignes        LigneReception[]
+  paiements     FournisseurPaiement[]
   createdAt     DateTime @default(now())
+}
+
+// Fiche fournisseur — coordonnées, articles habituellement fournis, historique des réceptions
+// et des paiements. Le montant dû à un fournisseur n'est jamais stocké directement : il se
+// calcule à la demande (somme des réceptions à son nom, au prix d'achat de chaque ligne, moins
+// la somme de ses paiements enregistrés) pour ne jamais risquer un solde désynchronisé.
+model Fournisseur {
+  id         String   @id @default(cuid())
+  nom        String   @unique
+  telephone  String?
+  email      String?
+  adresse    String?
+  notes      String?
+  actif      Boolean  @default(true)
+  articles   FournisseurArticle[]
+  receptions Reception[]
+  paiements  FournisseurPaiement[]
+  createdAt  DateTime @default(now())
+}
+
+// Association libre entre un fournisseur et les articles qu'il fournit habituellement (aide à la
+// commande) — ne limite pas quels articles peuvent apparaître sur une réception à son nom.
+model FournisseurArticle {
+  id            String      @id @default(cuid())
+  fournisseurId String
+  fournisseur   Fournisseur @relation(fields: [fournisseurId], references: [id])
+  articleId     String
+  article       Article     @relation(fields: [articleId], references: [id])
+  createdAt     DateTime    @default(now())
+
+  @@unique([fournisseurId, articleId])
+}
+
+// Un paiement réellement effectué à un fournisseur — réduit son solde dû. Peut être rattaché à
+// une réception précise (acompte, solde d'une livraison) ou laissé libre (règlement global).
+model FournisseurPaiement {
+  id            String      @id @default(cuid())
+  fournisseurId String
+  fournisseur   Fournisseur @relation(fields: [fournisseurId], references: [id])
+  montant       Int
+  mode          String      // "especes" | "mobile" | "virement" | "cheque"
+  reference     String?     // n° de virement/chèque, en texte libre
+  receptionId   String?
+  reception     Reception?  @relation(fields: [receptionId], references: [id])
+  note          String?
+  effectueParId String
+  effectuePar   User        @relation(fields: [effectueParId], references: [id])
+  createdAt     DateTime    @default(now())
 }
 
 model LigneReception {

@@ -606,4 +606,56 @@ router.get("/livraisons", async (req, res) => {
   });
 });
 
+// GET /api/etats/marge?dateDebut=&dateFin=&boutique= — réservé à l'administrateur :
+// marge = prix de vente - prix d'achat figé au moment de chaque vente (LigneVente.coutUnitaire),
+// jamais le prix d'achat courant de l'article (qui peut avoir changé depuis). Les lignes dont le
+// coût était inconnu à la vente (coutUnitaire null, article jamais reçu via une réception avec
+// prix) sont comptées à part, pour ne pas fausser la marge affichée avec un coût de 0.
+router.get("/marge", async (req, res) => {
+  if (!req.user.role.systeme) return res.status(403).json({ error: "Réservé à l'administrateur." });
+  const { boutique } = req.query;
+  const { dateDebut, dateFin } = scopedDateRange(req, req.query.dateDebut, req.query.dateFin);
+  const boutiqueFiltre = scopedBoutique(req, boutique);
+  const plage = parseDateRange(dateDebut, dateFin);
+
+  const lignes = await prisma.ligneVente.findMany({
+    where: { vente: { date: plage, boutique: boutiqueFiltre, statut: "Validee" } },
+    include: { article: true },
+  });
+
+  let chiffreAffaires = 0, coutTotal = 0, nombreLignesCoutInconnu = 0, quantiteCoutInconnu = 0;
+  const parArticle = {};
+
+  for (const l of lignes) {
+    chiffreAffaires += l.sousTotal;
+    if (l.coutUnitaire == null) {
+      nombreLignesCoutInconnu += 1;
+      quantiteCoutInconnu += l.quantite;
+      continue;
+    }
+    const cout = l.coutUnitaire * l.quantite;
+    coutTotal += cout;
+
+    const cle = l.articleId;
+    if (!parArticle[cle]) {
+      parArticle[cle] = { articleId: l.articleId, designation: l.designation, marque: l.marque, quantite: 0, chiffreAffaires: 0, cout: 0 };
+    }
+    parArticle[cle].quantite += l.quantite;
+    parArticle[cle].chiffreAffaires += l.sousTotal;
+    parArticle[cle].cout += cout;
+  }
+
+  const parArticleListe = Object.values(parArticle)
+    .map((a) => ({ ...a, marge: a.chiffreAffaires - a.cout, margePourcent: a.chiffreAffaires ? Math.round(((a.chiffreAffaires - a.cout) / a.chiffreAffaires) * 100) : null }))
+    .sort((a, b) => b.marge - a.marge);
+
+  const marge = chiffreAffaires - coutTotal;
+  res.json({
+    chiffreAffaires, coutTotal, marge,
+    margePourcent: chiffreAffaires ? Math.round((marge / chiffreAffaires) * 100) : null,
+    nombreLignesCoutInconnu, quantiteCoutInconnu,
+    parArticle: parArticleListe,
+  });
+});
+
 module.exports = router;
