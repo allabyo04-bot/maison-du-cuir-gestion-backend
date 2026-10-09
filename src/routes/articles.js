@@ -5,6 +5,8 @@ const prisma = require("../prisma");
 const { requireAuth, requirePermission } = require("../middleware/auth");
 const { BOUTIQUES, POINTURES, refBase } = require("../constants");
 const { consignerAudit } = require("../journalAudit");
+const cloudinary = require("../../config/cloudinary");
+const uploadImage = require("../middleware/upload");
 const router = express.Router();
 router.use(requireAuth);
 
@@ -75,7 +77,7 @@ router.get("/mouvements/historique", async (req, res) => {
 
 router.get("/", async (req, res) => {
   const articles = await prisma.article.findMany({
-    include: { marque: true, stocks: true },
+    include: { marque: true, stocks: true, photos: { orderBy: { ordre: "asc" } } },
     orderBy: { createdAt: "desc" },
   });
   res.json(articles);
@@ -443,6 +445,86 @@ router.get("/:id/historique-prix-achat", async (req, res) => {
     date: l.reception.dateReception,
     fournisseur: l.reception.fournisseur?.nom || l.reception.fournisseurNomLibre || null,
   })));
+});
+
+// POST /api/articles/:id/photo — ajoute une photo à la galerie de l'article (n'écrase pas les
+// photos existantes). La toute première photo ajoutée devient automatiquement la principale.
+router.post("/:id/photo", requirePermission("stock"), uploadImage.single("photo"), async (req, res) => {
+  const { id } = req.params;
+  const article = await prisma.article.findUnique({ where: { id } });
+  if (!article) return res.status(404).json({ error: "Article introuvable." });
+  if (!req.file) return res.status(400).json({ error: "Aucune image reçue." });
+
+  try {
+    const resultat = await new Promise((resolve, reject) => {
+      const stream = cloudinary.uploader.upload_stream(
+        { folder: "maison-du-cuir/articles", resource_type: "image" },
+        (error, result) => (error ? reject(error) : resolve(result))
+      );
+      stream.end(req.file.buffer);
+    });
+
+    const nombrePhotosExistantes = await prisma.photoArticle.count({ where: { articleId: id } });
+    const estPremierePhoto = nombrePhotosExistantes === 0;
+
+    await prisma.photoArticle.create({
+      data: {
+        articleId: id, url: resultat.secure_url, ordre: nombrePhotosExistantes,
+        estPrincipale: estPremierePhoto, ajouteParId: req.user.id,
+      },
+    });
+
+    // Article.photoUrl reste synchronisé sur la photo principale pour un accès rapide sans
+    // avoir à inclure la relation photos dans toutes les listes.
+    const misAJour = await prisma.article.update({
+      where: { id },
+      data: estPremierePhoto ? { photoUrl: resultat.secure_url } : {},
+      include: { photos: { orderBy: { ordre: "asc" } } },
+    });
+
+    res.json(misAJour);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Échec de l'upload de la photo." });
+  }
+});
+
+// DELETE /api/articles/:id/photos/:photoId — supprime une photo de la galerie. Si c'était la
+// photo principale, la suivante (par ordre) est promue automatiquement, sinon photoUrl repasse à null.
+router.delete("/:id/photos/:photoId", requirePermission("stock"), async (req, res) => {
+  const { id, photoId } = req.params;
+  const photo = await prisma.photoArticle.findUnique({ where: { id: photoId } });
+  if (!photo || photo.articleId !== id) return res.status(404).json({ error: "Photo introuvable pour cet article." });
+
+  await prisma.photoArticle.delete({ where: { id: photoId } });
+
+  let data = {};
+  if (photo.estPrincipale) {
+    const suivante = await prisma.photoArticle.findFirst({ where: { articleId: id }, orderBy: { ordre: "asc" } });
+    if (suivante) await prisma.photoArticle.update({ where: { id: suivante.id }, data: { estPrincipale: true } });
+    data = { photoUrl: suivante ? suivante.url : null };
+  }
+
+  const article = await prisma.article.update({
+    where: { id }, data, include: { photos: { orderBy: { ordre: "asc" } } },
+  });
+  res.json(article);
+});
+
+// PUT /api/articles/:id/photos/:photoId/principale — définit une photo existante comme
+// principale (vignette dans les listes et plus tard le catalogue du site).
+router.put("/:id/photos/:photoId/principale", requirePermission("stock"), async (req, res) => {
+  const { id, photoId } = req.params;
+  const photo = await prisma.photoArticle.findUnique({ where: { id: photoId } });
+  if (!photo || photo.articleId !== id) return res.status(404).json({ error: "Photo introuvable pour cet article." });
+
+  await prisma.photoArticle.updateMany({ where: { articleId: id }, data: { estPrincipale: false } });
+  await prisma.photoArticle.update({ where: { id: photoId }, data: { estPrincipale: true } });
+
+  const article = await prisma.article.update({
+    where: { id }, data: { photoUrl: photo.url }, include: { photos: { orderBy: { ordre: "asc" } } },
+  });
+  res.json(article);
 });
 
 module.exports = router;

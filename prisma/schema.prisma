@@ -45,6 +45,7 @@ model User {
   campagnesSoldeCreees CampagneSolde[]
   receptions Reception[]
   paiementsFournisseurs FournisseurPaiement[]
+  photosAjoutees PhotoArticle[]
   bonsLivraisonCrees BonLivraison[] @relation("bonsLivraisonCrees")
   bonsLivraisonClotures BonLivraison[] @relation("bonsLivraisonClotures")
   clientsCrees Client[] @relation("ClientsCrees")
@@ -64,6 +65,9 @@ model Article {
   id          String       @id @default(cuid())
   reference   String       @unique // généré : 3 lettres marque + 2 lettres famille + séquence
   designation String
+  // Reste synchronisé sur l'URL de la photo principale (voir PhotoArticle) — vignette rapide
+  // pour les listes sans avoir à inclure la relation photos partout.
+  photoUrl    String?
   famille     String       // "Chaussure" | "Sac"
   marqueId    String
   marque      Brand        @relation(fields: [marqueId], references: [id])
@@ -78,7 +82,27 @@ model Article {
   lignesBonLivraison LigneBonLivraison[]
   retoursNouvelArticle Retour[] @relation("nouvelArticleRetour")
   fournisseurs FournisseurArticle[]
+  photos      PhotoArticle[]
   createdAt   DateTime     @default(now())
+}
+
+// Plusieurs photos par article (galerie), avec une photo principale utilisée comme vignette
+// dans les listes (gestion, et plus tard le catalogue du site) — Article.photoUrl reste
+// synchronisé sur l'URL de la photo principale pour un accès rapide sans jointure.
+model PhotoArticle {
+  id            String   @id @default(cuid())
+  articleId     String
+  article       Article  @relation(fields: [articleId], references: [id], onDelete: Cascade)
+  url           String
+  ordre         Int      @default(0)
+  estPrincipale Boolean  @default(false)
+  createdAt     DateTime @default(now())
+  // Qui a ajouté la photo — sert à autoriser un non-admin à supprimer uniquement les photos
+  // qu'il a lui-même ajoutées (comme chez Archange Bébé).
+  ajouteParId   String?
+  ajoutePar     User?    @relation(fields: [ajouteParId], references: [id])
+
+  @@index([articleId])
 }
 
 // Une ligne de stock par (article, boutique, pointure).
