@@ -135,14 +135,44 @@ router.put("/:id", requirePermission("stock"), async (req, res) => {
 
 router.delete("/:id", requirePermission("stock"), async (req, res) => {
   const article = await prisma.article.findUnique({ where: { id: req.params.id } });
-  await prisma.article.delete({ where: { id: req.params.id } });
-  if (article) {
+  if (!article) return res.status(404).json({ error: "Article introuvable." });
+  try {
+    await prisma.article.delete({ where: { id: req.params.id } });
+  } catch (err) {
+    // Code Postgres 23001/23503 : une ligne liée existe encore ailleurs (stock, vente,
+    // mouvement, réception...) et bloque la suppression définitive — jamais laisser planter
+    // le serveur pour ça, on guide plutôt vers la désactivation.
+    if (err.code === "P2003" || err.meta?.field_name || /foreign key|violates/i.test(err.message || "")) {
+      return res.status(409).json({
+        error: "Impossible de supprimer définitivement cet article : il a déjà du stock, des ventes ou des mouvements enregistrés. Utilise plutôt \"Désactiver\" pour le retirer de la vente sans perdre son historique.",
+        codeConflit: "ARTICLE_REFERENCE",
+      });
+    }
+    console.error(err);
+    return res.status(500).json({ error: "Erreur lors de la suppression de l'article." });
+  }
+  await consignerAudit({
+    action: "SUPPRESSION", cible: `Article : ${article.designation} (${article.reference})`,
+    utilisateurId: req.user.id, boutique: req.user.boutique,
+  });
+  res.status(204).end();
+});
+
+// PATCH /api/articles/:id/actif — body: { actif: boolean } — désactive (ou réactive) un article
+// sans le supprimer, pour les cas où il a déjà du stock/des ventes et ne peut pas être effacé.
+router.patch("/:id/actif", requirePermission("stock"), async (req, res) => {
+  const { actif } = req.body;
+  if (typeof actif !== "boolean") return res.status(400).json({ error: "Le champ actif (true/false) est obligatoire." });
+  try {
+    const article = await prisma.article.update({ where: { id: req.params.id }, data: { actif } });
     await consignerAudit({
-      action: "SUPPRESSION", cible: `Article : ${article.designation} (${article.reference})`,
+      action: actif ? "REACTIVATION" : "DESACTIVATION", cible: `Article : ${article.designation} (${article.reference})`,
       utilisateurId: req.user.id, boutique: req.user.boutique,
     });
+    res.json(article);
+  } catch {
+    res.status(404).json({ error: "Article introuvable." });
   }
-  res.status(204).end();
 });
 
 router.put("/:id/stock", requirePermission("stock"), requireAdmin, async (req, res) => {
