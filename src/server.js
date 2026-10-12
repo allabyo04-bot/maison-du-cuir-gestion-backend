@@ -27,10 +27,17 @@ const apiPubliqueRoutes = require("./routes/api-publique");
 const journalAuditRoutes = require("./routes/journal-audit");
 const fideliteRoutes = require("./routes/fidelite");
 const fournisseurRoutes = require("./routes/fournisseurs");
+const boutiqueRoutes = require("./routes/boutique");
 
 const app = express();
 
-app.use(cors({ origin: process.env.FRONTEND_URL || "*" }));
+// FRONTEND_URL (gestion) et SITE_URL (site e-commerce) peuvent chacune contenir plusieurs
+// origines séparées par une virgule si besoin (ex: ancien + nouveau domaine le temps d'une
+// bascule). Sans aucune des deux variables définies, tout est autorisé (pratique en local).
+const originesAutorisees = [process.env.FRONTEND_URL, process.env.SITE_URL]
+  .filter(Boolean)
+  .flatMap((v) => v.split(",").map((o) => o.trim()));
+app.use(cors({ origin: originesAutorisees.length ? originesAutorisees : "*" }));
 app.use(express.json());
 
 app.get("/", (req, res) => res.json({ status: "ok", service: "gestion-commerciale-backend" }));
@@ -60,6 +67,7 @@ app.use("/api/api-publique", apiPubliqueRoutes);
 app.use("/api/journal-audit", journalAuditRoutes);
 app.use("/api/fidelite", fideliteRoutes);
 app.use("/api/fournisseurs", fournisseurRoutes);
+app.use("/api/boutique", boutiqueRoutes);
 
 // Gestion centralisée des erreurs non prévues
 app.use((err, req, res, next) => {

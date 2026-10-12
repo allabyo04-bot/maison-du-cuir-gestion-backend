@@ -46,6 +46,7 @@ model User {
   receptions Reception[]
   paiementsFournisseurs FournisseurPaiement[]
   photosAjoutees PhotoArticle[]
+  commandesEnLigneTraitees CommandeEnLigne[]
   bonsLivraisonCrees BonLivraison[] @relation("bonsLivraisonCrees")
   bonsLivraisonClotures BonLivraison[] @relation("bonsLivraisonClotures")
   clientsCrees Client[] @relation("ClientsCrees")
@@ -83,7 +84,45 @@ model Article {
   retoursNouvelArticle Retour[] @relation("nouvelArticleRetour")
   fournisseurs FournisseurArticle[]
   photos      PhotoArticle[]
+  lignesCommandeEnLigne LigneCommandeEnLigne[]
   createdAt   DateTime     @default(now())
+}
+
+// Commande passée depuis le site e-commerce — toujours en mode invité pour l'instant (pas de
+// compte client avec mot de passe côté site, la fiche Client de la gestion reste gérée par le
+// personnel). Le stock n'est décrémenté qu'à la confirmation par le personnel (statut Confirmee),
+// jamais à la simple création, pour ne jamais bloquer du stock sur une commande qui ne sera peut-
+// être jamais honorée.
+model CommandeEnLigne {
+  id              String   @id @default(cuid())
+  numero          String   @unique // ex: CMD-1733999999999, lisible pour la cliente et le personnel
+  nomClient       String
+  telephoneClient String
+  emailClient     String?
+  modeLivraison   String   // "Retrait" | "Livraison"
+  adresseLivraison String?
+  boutique        String   // boutique de retrait ou d'où part la livraison (StockItem décrémenté ici)
+  statut          String   @default("EnAttente") // EnAttente | Confirmee | Preparee | Livree | Annulee
+  total           Int
+  notes           String?
+  lignes          LigneCommandeEnLigne[]
+  traiteeParId    String?
+  traiteePar      User?    @relation(fields: [traiteeParId], references: [id])
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model LigneCommandeEnLigne {
+  id            String          @id @default(cuid())
+  commandeId    String
+  commande      CommandeEnLigne @relation(fields: [commandeId], references: [id], onDelete: Cascade)
+  articleId     String
+  article       Article         @relation(fields: [articleId], references: [id])
+  designation   String
+  pointure      String?
+  prixUnitaire  Int
+  quantite      Int
+  sousTotal     Int
 }
 
 // Plusieurs photos par article (galerie), avec une photo principale utilisée comme vignette
