@@ -1,4 +1,4 @@
-// Script à lancer UNIQUEMENT si le code de confirmation a été oublié (par toi ET Djenie).
+// Script à lancer UNIQUEMENT si le code de confirmation a été oublié (par toi ET Anaïs).
 // Comme le script initial, il s'exécute directement sur la base de données — accessible
 // seulement à toi (celui qui a les identifiants de connexion sur ton PC), ce qui reste un
 // niveau de sécurité suffisant pour autoriser cette réinitialisation d'urgence.
@@ -25,7 +25,7 @@ async function main() {
     await prisma.parametreSecurite.create({ data: { codeConfirmationHash } });
     console.log("Code de confirmation défini avec succès (aucun code n'existait encore).");
   }
-  console.log("Retiens-le bien (toi et Djenie uniquement) — il est exigé pour créer/modifier/supprimer un utilisateur ou un rôle.");
+  console.log("Retiens-le bien (toi et Anaïs uniquement) — il est exigé pour créer/modifier/supprimer un utilisateur ou un rôle.");
   await prisma.$disconnect();
 }
 

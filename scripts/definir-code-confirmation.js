@@ -24,7 +24,7 @@ async function main() {
   const codeConfirmationHash = await bcrypt.hash(nouveauCode, 10);
   await prisma.parametreSecurite.create({ data: { codeConfirmationHash } });
   console.log("Code de confirmation défini avec succès.");
-  console.log("Retiens-le bien (toi et Djenie uniquement) — il est exigé pour créer/modifier/supprimer un utilisateur ou un rôle.");
+  console.log("Retiens-le bien (toi et Anaïs uniquement) — il est exigé pour créer/modifier/supprimer un utilisateur ou un rôle.");
   await prisma.$disconnect();
 }
 
